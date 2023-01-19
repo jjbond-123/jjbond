@@ -17,3 +17,498 @@
     
     
 </beans>
+
+
+
+docker的存储
+--------------------
+Docker 存储之卷（Volume）
+
+（1）Docker 安装及基本用法
+
+（2）Docker 镜像
+
+（3）Docker 容器的隔离性 - 使用 Linux namespace 隔离容器的运行环境
+
+（4）Docker 容器的隔离性 - 使用 cgroups 限制容器使用的资源
+
+（5）Docker 网络
+
+（6）若干企业生产环境中的容器网络方案
+
+（7）Docker 存储 - AUFS
+
+（8）Docker 存储 - Volume
+
+ 
+
+1. Docker volume 的几种形态
+    有状态容器都有数据持久化需求。前一篇文章中提到过，Docker 采用 AFUS 分层文件系统时，文件系统的改动都是发生在最上面的容器层。在容器的生命周期内，它是持续的，包括容器在被停止后。但是，当容器被删除后，该数据层也随之被删除了。因此，Docker 采用 volume （卷）的形式来向容器提供持久化存储。Docker volume 有如下几种形态。
+
+1.1 无 - 不使用 Docker volume
+默认情况下，容器不使用任何 volume，此时，容器的数据被保存在容器之内，它只在容器的生命周期内存在，会随着容器的被删除而被删除。当然，也可以使用 docker commit 命令将它持久化为一个新的镜像。
+
+1.2 Data volume （数据卷）
+一个 data volume 是容器中绕过 Union 文件系统的一个特定的目录。它被设计用来保存数据，而不管容器的生命周期。因此，当你删除一个容器时，Docker 肯定不会自动地删除一个volume。有如下几种方式来使用 data volume：
+
+（1）使用 “-v 容器内目录” 形式
+
+docker run -d -P --name web -v /webapp training/webapp python app.py
+使用 docker inspect 命令可以看出，Docker 将本地一个 _data 目录 mount 为容器内的 webapp 目录了：
+
+"Mounts": [
+            {
+                "Name": "f143b7f379fb6d012a08656fc950bf6df4bf5a5b90c72f310644aa997620122b",
+                "Source": "/var/lib/docker/volumes/f143b7f379fb6d012a08656fc950bf6df4bf5a5b90c72f310644aa997620122b/_data",
+                "Destination": "/webapp",
+                "Driver": "local",
+                "Mode": "",
+                "RW": true,
+                "Propagation": ""
+            }
+        ],
+其实，在 web 容器被删除后，
+/var/lib/docker/volumes/f143b7f379fb6d012a08656fc950bf6df4bf5a5b90c72f310644aa997620122b/_data 目录及其中的内容都还会保留下来，但是，新启动的容器无法再使用这个目录，也就是说，已有的数据不能自动地被重复使用了。
+
+（2）使用 -v 来挂载一个主机上的目录到容器的目录
+
+docker run -d -P --name web2 -v /src/webapp:/webapp training/webapp python app.py
+主机上的目录可以是一个本地目录，也可以在一个 NFS share 内，或者在一个已经格式化好了的块设备上。
+
+其实这种形式和第一种没有本质的区别，容器内对 /webapp 的操作都会反映到主机上的 /src/webapp 目录内。只是，重新启动容器时，可以再次使用同样的方式来将 /src/webapp 目录挂载到新的容器内，这样就可以实现数据持久化的目标。
+
+（3）使用 -v 来挂载主机上的一个文件到容器内的一个文件
+
+docker run --rm -it -v ~/.bash_history:/root/.bash_history ubuntu /bin/bash
+1.3 使用 data container
+如果要在容器之间共享数据，最好是使用 data container。这种 container 中不会跑应用，而只是挂载一个卷。比如：
+
+创建一个 data container：
+
+docker create -v /dbdata --name dbstore training/webapp  /bin/true
+启动一个 app container：
+
+docker run -d -P --name web3 --volumes-from dbstore training/webapp python app.py
+其实，对 web3 这个容器来说，volume 的本质没变，它只是将 dbstore 容器的 /dbdata 目录映射的主机上的目录映射到自身的 /dbdata 目录。
+
+"Mounts": [
+            {
+                "Name": "5341c03f3b94f13f4c86d88ccb0f3b63487adf30dea7ae6b2d06e947235e7330",
+                "Source": "/var/lib/docker/volumes/5341c03f3b94f13f4c86d88ccb0f3b63487adf30dea7ae6b2d06e947235e7330/_data",
+                "Destination": "/dbdata",
+                "Driver": "local",
+                "Mode": "",
+                "RW": true,
+                "Propagation": ""
+            }
+        ],
+但是，其好处是，可以不管其目录的临时性而不断地重复使用它。
+
+1.4 使用 docker volume 命令
+Docker 新版本中引入了 docker volume 命令来管理 Docker volume。
+
+（1）使用默认的 ‘local’ driver 创建一个 volume
+
+root@docker1:/home/sammy# docker volume create --name vol1
+vol1
+root@docker1:/home/sammy# docker volume inspect vol1
+[
+    {
+        "Name": "vol1",
+        "Driver": "local",
+        "Mountpoint": "/var/lib/docker/volumes/vol1/_data",
+        "Labels": {},
+        "Scope": "local"
+    }
+]
+（2）使用这个 volume
+
+docker run -d -P --name web4 -v vol1:/volume training/webapp python app.p
+结果还是一样的，即将 vol1 对应的主机上的目录挂载给容器内的 /volume 目录。
+
+"Mounts": [
+            {
+                "Name": "vol1",
+                "Source": "/var/lib/docker/volumes/vol1/_data",
+                "Destination": "/volume",
+                "Driver": "local",
+                "Mode": "z",
+                "RW": true,
+                "Propagation": "rprivate"
+            }
+        ],
+1.5 Volume 删除和孤单 volume 清理
+1.5.1 在删除容器时删除 volume
+可以使用 docker rm -v 命令在删除容器时删除该容器的卷。
+
+root@docker1:/home/sammy# docker run -d -P --name web5 -v /webapp training/webapp python app.py
+69199905a74cb360935e32f4e99f7f11319f6aa36033a920aa0bae25874f5c69
+root@docker1:/home/sammy# docker volume ls
+DRIVER              VOLUME NAME
+local               5341c03f3b94f13f4c86d88ccb0f3b63487adf30dea7ae6b2d06e947235e7330
+local               838f4dd99721a9445be22a6b42d35e04cb43ad145ecf26107a9025f428587f76
+local               vol1
+root@docker1:/home/sammy# docker rm -vf web5
+web5
+root@docker1:/home/sammy# docker volume ls
+DRIVER              VOLUME NAME
+local               5341c03f3b94f13f4c86d88ccb0f3b63487adf30dea7ae6b2d06e947235e7330
+local               vol1
+
+1.5.2 批量删除孤单 volumes
+从上面的介绍可以看出，使用 docker run -v 启动的容器被删除以后，在主机上会遗留下来孤单的卷。可以使用下面的简单方法来做清理：
+
+root@docker1:/home/sammy# docker volume ls -qf dangling=true
+244a23f3ab11f17345a68e77f96bb46a8dbaf445760dd86ab0faa07dfbd84236
+c864cfac232e8728b1805abc8c363d324124b38e6297544a8cbbf61d883c7e46
+f143b7f379fb6d012a08656fc950bf6df4bf5a5b90c72f310644aa997620122b
+root@docker1:/home/sammy# docker volume rm $(docker volume ls -qf dangling=true)
+244a23f3ab11f17345a68e77f96bb46a8dbaf445760dd86ab0faa07dfbd84236
+c864cfac232e8728b1805abc8c363d324124b38e6297544a8cbbf61d883c7e46
+f143b7f379fb6d012a08656fc950bf6df4bf5a5b90c72f310644aa997620122b
+root@docker1:/home/sammy# docker volume ls
+DRIVER              VOLUME NAME
+local               5341c03f3b94f13f4c86d88ccb0f3b63487adf30dea7ae6b2d06e947235e7330
+local               vol1
+github 上有很多脚本可以自动化地清理孤单卷，比如：
+
+https://github.com/chadoe/docker-cleanup-volumes/blob/master/docker-cleanup-volumes.sh
+https://github.com/meltwater/docker-cleanup 
+1.6 小结
+
+对以上内容的两点小结：
+
+容器内的数据是临时性的，它会随着容器生命周期的结束而消失
+默认的 Docker volume （driver = ‘loclal’）不管是哪种形式，本质上都是将容器所在的主机上的一个目录 mount 到容器内的一个目录，因此，它不具备可移植性。
+2. Flocker：容器的分布式存储平台
+第一部分提到过，原生的 Docker volume 不具备可移植性。于是，出现了Docker 的分布式卷解决方案 Flocker。先来看看 Flocker volume 和 Docker 原生 volume 的对比：
+
+
+
+启动一个使用 Flocker 卷的容器：
+
+docker run --volume-driver flocker -v flocker-volume:/container/dir --name=container-xyz
+它带来的好处包括：
+
+容器的数据会被写入 Flocker 后端存储而不是主机上，因此，在主机出现故障时可以保证数据不丢失
+在容器迁移时，Flocker 会自动地将卷从一个 host 移植到另一个 host
+
+------------------------------------------------------
+
+git-lfs使用
+
+1. 什么是 Git-LFS？
+Large File Storage的缩写，即在 Git 仓中大文件的存储方案，理论上来说 Git 仓库中可以保存任意文件，包括普通的文本文件或二进制文件。但是如果你真的在 Git 仓库中保存了大量的二进制文件（大文件），不用多久就会苦不堪言！因为 Git 克隆是全仓库克隆，越来越庞大的 Git仓库会导致全仓库克隆越来越慢...
+为了能够高效地通过 Git 管理二进制文件（大文件），社区出现了一些工具，例如：git-annex。不过 GitHub在2015年4月公布的 Git LFS 解决方案，更优雅地解决了Git管理二进制文件（大文件）的难题。
+
+
+2. 应用场景 ?
+Git 仓库应该只对文本源码进行管理，如果必须存在一些二进制，那么某些场景下可以考虑 LFS:
+	如果二进制文件不是很大、也不会频繁更新，那么可以直接入 Git 仓库
+	如果二进制文件较大（如 >50M），或者有一定频度的更新操作，那么不建议把该二进制文件直接入 Git 仓库，建议使用 Git-LFS 进行托管
+	如果你想进行构建临时结果的存放，不要使用 git 仓库，可以考虑 CMC 等平台。
+
+
+
+
+3. 下载和安装 Git-LFS
+3.1 脚本自动安装
+目前提供了 自动安装与更新脚本, 可以按照如下方式下载并运行:
+建议手动安装
+3.1.1 Windows
+(1) 开始菜单 -> 搜索 Git Bash -> 右键 管理员运行
+ 
+(2) 输入命令:
+curl http://isource-pages.huawei.com/iSource/git-lfs/git_lfs_autoinstall.sh -o git_lfs_autoinstall.sh && sh git_lfs_autoinstall.sh
+最后输出 successfully 意味安装成功，可以通过 git lfs version 查看版本信息:
+ 
+3.1.2 linux
+执行如下命令:
+curl http://isource-pages.huawei.com/iSource/git-lfs/git_lfs_autoinstall.sh -o git_lfs_autoinstall.sh &&
+sudo sh git_lfs_autoinstall.sh && (git lfs uninstall; git lfs install)
+
+
+
+
+3.2 手动下载安装
+3.2.1 Git-LFS version v2.8.0.p1
+说明：
+	修复无法正常扫描 alternates 仓库中的 pack 文件的问题
+	修复 pointer 文件中存在类似 \t 空白字符导致的检出错误
+	修复 git-lfs 因为 ABI 兼容问题导致解析域名失败的问题
+	修复 url.insteadof 配置对黄绿区代理无效的问题
+3.2.2 安装 git-lfs
+一、下载git-lfs安装包
+  下载地址：
+http://3ms.huawei.com/hi/group/2031557/files.html#category=1316741
+ 
+二、安装git-lfs
+     1、 解压下载的git-lfs包，获取git-lfs可执行程序文件
+          
+2、拷贝可执行程序文件到环境变量目录
+      a）、 Linux 平台：
+
+          把git-lfs放到路径 /usr/local/bin 下，执行chmod u+x  /usr/local/bin/git-lfs
+      b）、Windows 平台：
+         
+        把可执行程序文件重命名为：git-lfs.exe(如果不是）
+        将 git-lfs.exe 复制到 c:\Windows\system32 目录下
+     （如果本机是64位系统，而且添加到system32目录后无效的情况下，请复制到C:\Windows\SysWOW64目录下）
+
+1.	前提：
+Git
+确认已经安装了 Git，且需要 1.8.2 或更高版本的 Git。这是因为小于 1.8.2 版本的 Git 不支持 pre-push 钩子，导致 git push 命令不能将本地二进制文件推送到 Git-LFS 存储服务器。
+   $ git version
+TortoiseGit
+如果经常使用TortoiseGit，请确保安装最新的2.0.0版本(或以上)，之前的版本存在一个Bug，导致使用Git-LFS时可能遇到提交失败的情况。下载地址：https://tortoisegit.org/download/。
+具体参考ISSUE: https://gitlab.com/tortoisegit/tortoisegit/issues/2668
+1.	下载：选择适合平台的正确版本，解开压缩包。
+2.	对于 Linux 平台，执行 install.sh 将 git-lfs 自动复制到路径 /usr/bin 下。
+3.	如果之前手动将老版本的 git-lfs 使用whereis git-lfs ，查找git-lfs位置然后手工删除老版本的 git-lfs。
+4.	对于 Windows 平台，将 git-lfs-windows-amd64.exe 或者 git-lfs-windows-386.exe 复制到 GIT安装目录\usr\bin\git-lfs.exe (替换git默认安装的git-lfs.exe）。
+
+
+
+
+3.2.3 初始化 git-lfs（一次性操作）
+安装完毕后，执行下面命令完成初始化：
+$ git lfs install
+这个命令会自动修改用户主目录下的 .gitconfig 配置文件（即 ~/.gitconfig），添加 Git-LFS 的过滤器启动（filter driver）配置。
+查看 ~/.gitconfig ，如果显示 lfs 过滤器的信息则表明正确初始化了 lfs：
+$ cat ~/.gitconfig
+[filter "lfs"]
+    clean = git-lfs clean -- %f
+    smudge = git-lfs smudge -- %f
+    process = git-lfs filter-process
+    required = true
+至此就完成了 git-lfs 的安装和设置。
+ 如果 git lfs install 提示报错，可以先执行 git lfs uninstall 后再次执行。
+
+
+
+
+
+4. 项目管理者（或者开发者）如何对需要用 Git-LFS 管理的文件进行标记呢？
+Git 并不能代替用户去判断哪些文件应该放在仓库里面，哪些文件不适合放在仓库里面，而是需要靠用户通过配置文件来指定。这个配置文件就是仓库中检入的 .gitattributes 文件。
+Git-LFS 是通过 Git 属性文件来识别哪些文件用 git-lfs 来管理。不过如果你不了解 .gitattributes 属性文件也没有关系。Git-LFS提供了简单的命令。
+例如当前工作区有一个文件 foo.pdf 较大，例如大于50M, 如果想将这个文件通过Git-LFS来管理。使用如下命令进行标记：
+$ git lfs track foo.pdf
+Tracking foo.pdf
+
+执行此命令后工作区会生成一个 .gitattributes 属性文件，内容如下：
+$ cat .gitattributes
+foo.pdf filter=lfs diff=lfs merge=lfs -text
+将这个属性文件和被追踪的文件 foo.pdf 一并提交到仓库：
+$ git add .gitattributes foo.pdf
+$ git commit -s -m "git-lfs: track foo.pdf"
+
+则这个文件 foo.pdf 会自动由 Git-LFS 进行管理。
+注意: 建议将大文件通过Git-LFS管理，如需要找出仓库内大于50M的文件，在Git仓根目录执行如下命令：
+$ find ./ -path "./.git" -prune -o -type f -size +50M -print | cut -b 3-
+ 
+然后执行之前所述命令将大文件添加到Git-LFS即可。
+
+
+
+
+
+5. 执行普通的 Git 操作，二进制文件自动上传下载到 Git-LFS 服务器中
+检查文件是否正确转换为Git-LFS:
+执行 git lfs ls-files 命令能输出文件的 oid 信息
+$ git lfs ls-files -l
+ec19e2d68fb3a44242b99555479d9886876dc54d8e1950b7f3639a6545ed961d * foo.pdf
+执行 git show 能输出文件的Git-LFS链接文件的内容, Git-LFS链接文件包含 version, oid 和 size 三个信息
+$ git show HEAD:foo.pdf
+version https://git-lfs.github.com/spec/v1
+oid sha256:ec19e2d68fb3a44242b99555479d9886876dc54d8e1950b7f3639a6545ed961d
+size 3780462
+则表明正确将文件转换为Git-LFS管理。
+向服务器推送（注意下面命令的第一行输出就是 git-lfs 推送数据的输出）：
+$ git push origin master
+Git LFS: (1 of 1 files) 758 B / 758 B
+Counting objects: 4, done.
+Delta compression using up to 4 threads.
+Compressing objects: 100% (3/3), done.
+Writing objects: 100% (3/3), 390 bytes | 0 bytes/s, done.
+Total 3 (delta 1), reused 0 (delta 0)
+To git@rnd-isourceb.huawei.com:p00297972/online_lfs.git
+   edbccce..f2c1eed  master -> master
+
+推送遇到问题：
+ 
+执行以下命令：
+git config lfs.https://codehub-dg-y.huawei.com/j84185300/MRS-3.2.0.git/info/lfs.locksverify false
+git config --global --unset http.proxy
+git config --global --unset https.proxy
+ 
+
+6. 如何确认某个文件在 Git 仓库中保存的是 LFS 连接，而非二进制数据呢？
+执行下面命令，可以看到提交到仓库中的 foo.pdf 并不包含本身的二进制数据，而是一个连接。我们称这个文本链接为 LFS-Link。
+$ git log -p foo.pdf
+commit 68e6460aa8d61b796bf48c5d8d6225e9f49feea1
+Author: Jiang Xin <jiangxin10@huawei.com>
+Date:   Tue Nov 24 20:06:16 2015 +0800
+
+    Add foo.pdf via git-lfs
+
+diff --git a/foo.pdf b/foo.pdf
+new file mode 100644
+index 0000000..477de6a
+--- /dev/null
++++ b/foo.pdf
+@@ -0,0 +1,3 @@
++version https://git-lfs.github.com/spec/v1
++oid sha256:ec19e2d68fb3a44242b99555479d9886876dc54d8e1950b7f3639a6545ed961d
++size 3780462
+那么工作区的 foo.pdf 是正确的文件么？通过下面命令，我们可以看到工作区中的 foo.pdf 文件的确是完整的原始文件：
+$ ls -l foo.pdf
+-rw-rw-r--+ 1 jiangxin jiangxin 3780462 11月 24 19:48 foo.pdf
+
+-----------------------------------------
+	
+Jenkins+Isource门禁搭建
+	1	环境要求
+1.1	设备要求
+性能良好的Euler执行机一台，需要配置大网IP，安装Ruby2.6.3；设备用来部署Jenkins，以下统称服务器
+2	Jekins服务器搭建及配置
+2.1	Jenkins下载
+下载链接： http://rnd-mirrors.huawei.com/jenkins-updates/download/war/
+选择最新的Jenkins war包，下载。
+2.2	Tomcat下载及安装
+3ms上搜索下载或见附件。 
+服务器上在home目录下创建Jenkins（可以自定义）目录作为tomcat安装目录，将tomcat安装包copy到该目录下并解压，具体操作命令如下：
+
+
+2.3	Jenkins部署
+将jenkins.war包拷贝至Apache Tomcat 的webapps目录下，在Apache运行起来之后(在bin目录下启动./startup.sh，关闭./shutdown.sh),会发现将会生成一个目录：jenkins
+ 
+2.4	Jenkins配置
+修改Jenkins根目录：http://3ms.huawei.com/km/blogs/details/5504175
+
+在上步骤执行./startup.sh后，tomcat服务器已启动，Jenkins服务已加载，可在浏览器页面访问Jenkins了，网址http://10.162.125.18:8080/jenkins/，根据实际设备IP替换网址中的IP即可
+2.4.1	安装插件
+Jenkins插件下载网址：http://rnd-mirrors.huawei.com/jenkins-updates/download/plugins/
+注意：当前Jenkins上配置自动下载安装失败，需要手动下载安装（比较耗时）
+所需插件：
+•	Git Plugin (version:2.4.1)
+•	Workflow Step API Plugin (version:1.15)
+•	Credentials Plugin (version:2.1.0)
+•	Git Client Plugin (version:1.19.0)
+•	最新的iSource-jenkins-plugin插件安装包 (安装该插件前请先执行2.4.2步骤)：http://isource-pages.huawei.com/iSourceDevClub/isource-jenkins-pugin/
+安装过程中有依赖插件需要安装的，根据提示依次下载安装即可
+安装方式：
+Manage Jenkins --> Manage Plugins --> Advanced --> Upload Plugin
+ 
+2.4.2	配置插件
+由于该插件需要调用iSource API，回写构建结果至iSource，而iSource的API都是需要对调用者进行身份认证的，因此，在使用该插件前，需要先填写用户在iSource上的Private Token信息，同时，为确保构建信息能够写回，请确保Private Token所属用户，在iSource上至少具有待构建项目的committer权限。
+1.	进入Manage Jenkins --> Configure System，在iSource设置项中，填入iSource host URL，设置为http://rnd-isourceb.huawei.com。
+2.	在Credentials选项后，点击Add添加秘钥，在Kind下拉框中，选择iSource API token，并在API token输入框中填入用户的Private Token，点击add完成添加。（添加用户使用自动化公有账户，公有账户登录isource操作详见：http://wiki.inhuawei.com/pages/viewpage.action?pageId=86271336）；获取账户的Private Token步骤：isource上Workspace --> Profile Setting --> Private Token
+ 
+3.	在Credentials下拉框中选中刚刚添加的秘钥，点击右后方的Test Connection按钮，若出现Success提示，则说明秘钥添加成功。否则，请重新确认Private Token是否正确。
+ 
+4.	点击save退出
+2.4.3	权限设置
+详见：http://3ms.huawei.com/hi/group/6373/wiki_5441929.html
+3	项目门禁配置
+3.1	Jenkins创建项目
+Jenkins主页选择New Item,在弹出页面中输入项目名称（名称自定义即可），选择FreeStyle Project，点击OK 
+3.2	Jenkins项目配置
+3.2.1	进入上步骤创建的项目（Test_Jenkins），在 源码管理(SCM：Source Code Management) 部分:
+i.	选中 Git
+ii.	输入你在iSource上的git仓地址（如果用于MR触发构建，这里应该为MR目标仓地址） Repository URL (e.g.: ssh://git@isource-nj.huawei.com:2222/Sec_AutoTest/Auto_SDV_Scripts_Baseline_5.0.0.git)
+	在 Advanced settings, 将 Name 设置为 origin， refspec 设置为 +${iSourceToBuildRef}:refs/remotes/origin/${iSourceToBuildRef}
+iii.	将 Branch Specifier 设置为 ${iSourceToBuildRef}。该参数将自动检出事件触发源的代码。如PUSH触发的构建，该参数代表下载PUSH目标分支的最新代码，如果是MR触发，该参数代表下载MR目标分支最新代码，加上MR修改的代码。
+ 
+注意: 按以上方式配置的Jenkins Job，由于依赖iSource插件生成的环境变量，如${iSourceToBuildRef}，默认情况下，将只能用于从iSource上触发构建。如果需要将该Job用于其他方式触发，可使用 EnvInject Plugin 设置这些环境变量的默认值。关于iSource插件生成的环境变量详情，请查看http://rnd-isourceb.huawei.com/iSource/documentation/tree/master/web_hooks/web_hooks_config_file.md。
+3.2.2	在 构建触发器(Build Triggers) 部分:
+o	勾选 Build when a change is pushed to iSource.
+o	勾选触发该Job进行构建的iSource事件
+	Push Events, 当有人往iSource上指定git仓push代码时，会触发该构建
+	Merge Request Events, 当iSource上有人往指定项目发MR，或者更新MR时，会触发该构建
+	Reopened Merge Request Events, 当iSource上有人reopen MR时，会触发该构建（需先勾选Merge Request Events才会生效）
+	Comments, 当有人在iSource上指定项目的MR下添加指定内容的评论时，会触发该构建；其中，指定评论内容，可以在Comment for triggering a build中设置，默认为Jenkins please retry a build
+ 
+o	在Advanced设置中，可根据需要设置额外功能
+	Enable[ci-skip], 勾选该处后，如果一个MR标题中带有[ci-skip]的内容，则该MR不会触发构建
+	Ignore draft Merge Request, 勾选该处后，如果一个MR处于draft模式，则该MR不会触发构建
+	Set build description to build cause (eg. Merge request or Git Push ), 勾选该处后，每一次从iSource上触发的构建，在Jenkins上都会留下构建描述，标明触发方式，触发人等信息
+	Allowed branches, 此处可以根据需要，对触发构建的git仓分支进行过滤
+	Secret token, 对触发该项目进行构建的请求进行鉴权，默认为空，即不需要鉴权，点击右后方的Generate按钮，可以生成随机秘钥。注意：生成的秘钥，需要在iSource上触发构建的源git仓中添加yml文件，配置webhook行为，用于在iSource webhook消息中传递秘钥，具体配置方式请查看 iSource配置。
+ 
+3.2.3	在 构建后操作(post build) 部分
+o	点击 增加构建后操作步骤，选择 Publish build status to iSource commit，该选项会将构建结果回写至iSource
+o	根据需要，可以设置额外构建后操作
+	Add note with build status on iSource merge requests，该选项会将构建结果以评论的形式回写至iSource的MR下
+	Add vote for build status on iSource merge requests, 该选项会根据构建结果为MR添加评分，如果构建成功，则评分+1，若失败，则评分-1
+ 
+3.2.4	Excute Shell
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+4	Isource配置
+4.1	Webhook配置
+注意：受IT防火墙安全策略限制，iSource部分服务器不能向任意IP或端口主动发送webhook消息，代码仓库在东莞、西安、南京、北京等地域的项目，都需要向IT申请开通iSource到自有Jenkins的防火墙
+•	在iSource上，到需要触发构建的项目中（与Jenkins上待触发项目中git插件配置的git仓一致），进入 Project Settings
+•	点击 Git Hooks/Web Hooks, 选择 Web Hooks页签
+•	添加Jenkins工程的URL(Jenkins工程配置中有) http://JENKINS_URL/webhook/PROJECT_NAME
+o	对于需要MR触发的Jenkins工程，勾选上Merge Request events和Comments
+o	对于需要push触发的jenkins工程，勾选上Push events
+ 
+5	其他事项
+5.1	Jenkins环境变量
+如果在书写shell或者规则时需要使用环境变量值，Jenkins提供以下运行时环境变量（e.g.shell中的使用方法：title = `echo ${iSourceMergeRequestTitle}`）
+- iSourceBranch, 触发构建的源git仓分支，push触发时，该值为push的目标分支，MR触发时，该值为MR源分支
+- iSourceSourceBranch, 同上
+- iSourceActionType, 触发构建的iSource事件类型，如MERGE, PUSH, NOTE
+- iSourceUserName, 触发构建人工号
+- iSourceUserEmail, 触发构建人邮箱
+- iSourceUserNickName, 触发构建人姓名
+- iSourceSourceRepoHomepage, push触发时，该值为push目标项目的URL，MR触发时，该值为MR源项目URL
+- iSourceSourceRepoName, push触发时，该值为push目标仓名，MR触发时，该值为MR源仓名
+- iSourceSourceNamespace, push触发时，该值为push目标仓所有者，MR触发时，该值为MR源仓所有者
+- iSourceSourceRepoURL, push触发时，该值为push目标仓的http地址，MR触发时，该值为MR源仓的http地址
+- iSourceSourceRepoSshUrl, push触发时，该值为push目标仓的ssh地址，MR触发时，该值为MR源仓的ssh地址
+- iSourceSourceRepoHttpUrl, push触发时，该值为push目标仓的http地址，MR触发时，该值为MR源仓的http地址
+- iSourceMergeRequestTitle, 触发该构建的MR的标题
+- iSourceMergeRequestDescription, 触发该构建的MR的描述
+- iSourceMergeRequestId, 触发该构建的MR的全局ID
+- iSourceMergeRequestLocalId, 触发该构建的MR，在所属项目中，所有MR按创建时间排序后的编号
+- iSourceMergeRequestLastCommit, 触发该构建的MR中，最后一次commit的ID
+- iSourceTargetBranch, 触发该构建git仓目标分支
+- iSourceTargetRepoName, 触发该构建的MR目标仓名
+- iSourceTargetNamespace, 触发该构建的MR目标仓所有者
+- iSourceTargetRepoSshUrl, 触发该构建的MR目标仓ssh地址
+- iSourceTargetRepoHttpUrl, 触发该构建的MR目标仓http地址
+- iSourceBefore, 触发该构建的push事件，在push前目标git仓目标分支的最新commit
+- iSourceAfter, 触发该构建的push事件，在push后目标git仓目标分支的最新commit
+- iSourceTriggerPhrase, 如果是comment事件触发，触发该构建的具体评论内容
+- iSourceToBuildRef, git仓中存储MR变更的临时引用或push触发的目标分支
+- iSourceOmega, 触发该构建的MR，是否为OMEGA MR
+
+---------------------------------------------------------------------------
+	
+
