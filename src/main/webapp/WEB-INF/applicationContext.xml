@@ -511,4 +511,98 @@ o	对于需要push触发的jenkins工程，勾选上Push events
 
 ---------------------------------------------------------------------------
 	
+SPES Linux版本安装使用说明
+
+
+1、适用场景
+        用户侧Linux系统的机器，通过SPES认证接入华为大网，不需要申请固定IP。
+
+
+2、支持的操作系统
+	1)支持如下Linux版本：
+		CentOS 6.4/6.8/7.2/7.4/7.5/7.6/7.7
+		SuSE 10/11/12
+		Redhat 6.7/6.8
+		Ubuntu 14/16/18
+		Euler 2.0/2.3/2.8/3.0
+		UOS
+		deephin
+		其他Linux版本没有进行测试，理论上都支持，在安装时可以选择继续安装
+
+	2)支持X86和ARM架构
+
+
+3、安装说明
+	1)将SPES安装包文件拷贝到待安装的Linux机器中。本安装说明中以SPES安装包文件“SPES_FOR_LINUX-2019.10.09-3.6.1.3.tar.gz”为例进行说明，实际操作时，请修改为对应的SPES安装包文件名。
+
+	2)如果当前不是root账号，需要切换到root账号：su root
+
+	3)执行解压命令：tar xvf SPES_FOR_LINUX-2019.10.09-3.6.1.3.tar.gz
+	  进入解压后的目录：cd SPES_FOR_LINUX-2019.10.09-3.6.1.3
+
+	4)执行install脚本：sh install.sh
+	  等待命令执行结束，即可完成安装
+
+	5)如果提示SPES may have compatibility problems in your Linux OS, Do you want to continue the installation? (yes(y) or no(n))可选择输入yes(y)来继续安装
+
+	6)执行如下命令，查看SPES进程，如果存在则说明安装成功：
+	  ps -C SpesAuthService
+	  ps -C spesservice
+
+
+4、使用说明
+	1)查看SPES认证状态
+	  spes -status
+
+	2)进行SPES认证
+	  spes -login UserName Password
+
+	3)退出SPES认证
+	  spes –logout
+
+	4)查看版本号
+	  spes -version
+
+	5)查看帮助信息
+	  spes –help
+
+
+5、其他说明
+	已申请固定IP的机器，也可以安装该版本，如果SPES认证失败，可以忽略
+	其他Linux版本没有进行测试，理论上都支持，在安装时可以选择继续安装
+	如有问题请联系IT热线
+
+-------------------------------
+TCM 清除
+一、问题描述
+安装麒麟系统时，安装过程无任何报错，最后进入登录界面后，登录系统时报机器识别码错误。
+ 
+二、解决方案 清除TCM
+1、	登录iBMC，选择IBMC管理，选择固件升级，选择bios-crypt-image_d_zyj.hpm文件，点击开始升级。
+
+
+
+
+
+2、	升级完成之后使用secadm （aaaaaaaaaaaaaaa1!）用户登录到配置管理界面，选择安全->TCM->TCM重置->是  F10保存退出。
+ 
+
+ 
+
+ 
+
+3,、重启完成之后进入登录界面，使用secadm （aaaaaaaaaaaaaaa1!）用户登录，进行本地注册。操作如下：
+ 
+ 
+
+4.注销登录，使用root账户登录，完成。
+	
+
+	
+	
+	
+	
+	
+	
+	
 
